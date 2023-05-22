@@ -5,8 +5,14 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from pytorchltr.datasets.svmrank.svmrank import SVMRankDataset
 
-from evaluate import evaluate_test_performance
-from loss import listwise_loss
+
+# インポート先となっているディレクトリを表示する
+import sys
+
+sys.path.append("ml_design_book/ch04")
+
+from evaluate import evaluate_test_performance, evaluate_test_performance_synthetic
+from loss import listwise_loss, listwise_loss_simple
 from utils import convert_rel_to_gamma, convert_gamma_to_implicit
 
 
@@ -103,6 +109,82 @@ def train_ranker(
             optimizer.step()
         score_fn.eval()
         ndcg_score = evaluate_test_performance(score_fn=score_fn, test=test)
+        ndcg_score_list.append(ndcg_score)
+
+    return ndcg_score_list
+
+
+def train_ranker_synthetic_bandit(
+    score_fn: nn.Module,
+    optimizer: optim,
+    estimator: str,
+    train: SVMRankDataset,
+    test: SVMRankDataset,
+    len_list: int,
+    batch_size: int = 32,
+    n_epochs: int = 30,
+) -> List:
+    """ランキングモデルを学習するための関数.
+
+    パラメータ
+    ----------
+    score_fn: nn.Module
+        スコアリング関数.
+
+    optimizer: optim
+        パラメータ最適化アルゴリズム.
+
+    estimator: str
+        スコアリング関数を学習するための目的関数を観測データから近似する推定量.
+        'naive', 'ips', 'ideal'のいずれかしか与えることができない.
+        'ideal'が与えられた場合は、真の嗜好度合いデータ（Explicit Feedback）をもとに、ランキングモデルを学習する.
+
+    train: SVMRankDataset
+        （オリジナルの）トレーニングデータ.
+
+    test: SVMRankDataset
+        （オリジナルの）テストデータ.
+
+    batch_size: int, default=32
+        バッチサイズ.
+
+    n_epochs: int, default=30
+        エポック数.
+
+    """
+    assert estimator in [
+        "naive",
+        "ips",
+        "ideal",
+    ], f"estimator must be 'naive', 'ips', or 'ideal', but {estimator} is given"
+
+    ndcg_score_list = list()
+    for _ in tqdm(range(n_epochs)):
+        loader = DataLoader(
+            train,
+            batch_size=batch_size,
+            shuffle=True,
+            # collate_fn=train.collate_fn(),
+        )
+        score_fn.train()
+        for click, expected_reward, theta, context_in in loader:
+            if estimator == "naive":
+                loss = listwise_loss_simple(scores=score_fn(context_in), click=click)
+            elif estimator == "ips":
+                loss = listwise_loss_simple(
+                    scores=score_fn(context_in),
+                    click=click,
+                    pscore=theta,
+                )
+            elif estimator == "ideal":
+                loss = listwise_loss_simple(scores=score_fn(context_in), click=expected_reward)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        score_fn.eval()
+        ndcg_score = evaluate_test_performance_synthetic(
+            score_fn=score_fn, test=test, len_list=len_list
+        )
         ndcg_score_list.append(ndcg_score)
 
     return ndcg_score_list
